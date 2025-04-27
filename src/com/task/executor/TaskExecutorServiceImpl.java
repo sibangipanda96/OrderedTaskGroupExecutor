@@ -15,6 +15,7 @@ public class TaskExecutorServiceImpl implements TaskExecutor {
     AtomicBoolean shouldKeepRunning;
     Map<UUID, ReentrantLock> groupLocks;
     Map<UUID, AtomicBoolean> groupStatus;
+    Map<UUID, Future<?>> groupActiveFutures;
     Thread consumeTasks;
 
     public TaskExecutorServiceImpl(int maxPoolSize){
@@ -24,6 +25,7 @@ public class TaskExecutorServiceImpl implements TaskExecutor {
         shouldKeepRunning = new AtomicBoolean(true);
         groupLocks = new ConcurrentHashMap<>();
         groupStatus = new ConcurrentHashMap<>();
+        groupActiveFutures = new ConcurrentHashMap<>();
         consumeTasks = new Thread(this::taskConsumer);
         consumeTasks.start();
     }
@@ -79,17 +81,21 @@ public class TaskExecutorServiceImpl implements TaskExecutor {
                 , id -> new ReentrantLock());
         var status = groupStatus.computeIfAbsent(taskWrapper.task().taskGroup().groupUUID()
                 , id -> new AtomicBoolean(false));
-        while (status.get()) {
+        int count = 0;
+        while (status.get() && count++ < 5) {
             System.out.println("Lock for group " + taskWrapper.task().taskGroup() + " is currently held, stopping polling...");
             // Wait for some time before trying again
             try {
-                Thread.sleep(500); // Avoid busy-waiting, sleep briefly
+                Thread.sleep(5000); // Avoid busy-waiting, sleep briefly
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;
             }
         }
-            executorService.submit(() -> {
+        if(status.get()){
+            groupActiveFutures.getOrDefault(taskWrapper.task().taskGroup().groupUUID(), new CompletableFuture<>()).cancel(true);
+        }
+        Future<?> future =  executorService.submit(() -> {
                 try {
                     lock.lock();
                    status.set(true);
@@ -107,5 +113,6 @@ public class TaskExecutorServiceImpl implements TaskExecutor {
                     status.set(false);
                 }
             });
+        groupActiveFutures.put(taskWrapper.task().taskGroup().groupUUID(), future);
     }
 }
